@@ -1,21 +1,14 @@
 /**
  * Shipping Rate Engine
  *
- * Provides shipping rate estimates for Eliezer Suite's primary trade corridors.
- * Integrates real carrier APIs when credentials are configured, and falls back
- * to lane-based market estimates sourced from public shipping indices.
- *
- * Supported carriers (plug in API keys to activate):
- *   - DHL Express (air + express)
- *   - Freightos / WebCargo (sea + air marketplace)
- *   - Flexport (managed shipping)
+ * Eliezer Suite's own shipping rates by trade corridor and mode.
+ * Rates are set and maintained by the Eliezer Suite team.
+ * Update LANE_RATES below to adjust pricing.
  *
  * Primary corridors:
  *   China (SHA/PVG/CAN/SZX) → Nigeria (LOS/ABV)
  *   China → UK, USA, Canada, UAE, Kenya, Ghana
  */
-
-import axios from "axios";
 
 export type ShipmentMode = "sea_fcl" | "sea_lcl" | "air" | "express";
 
@@ -33,7 +26,7 @@ export interface CarrierQuote {
   priceUSD:     number;
   transitDays:  { min: number; max: number };
   validUntil:   string; // ISO-8601
-  source:       "live" | "estimate";
+  source:       "eliezer";
   notes?:       string;
 }
 
@@ -185,7 +178,7 @@ function buildEstimates(req: ShippingRateRequest, lane: LaneRates): CarrierQuote
         priceUSD:    Math.round(priceUSD),
         transitDays: lane.sea_transit_days,
         validUntil:  validUntil(),
-        source:      "estimate",
+        source:      "eliezer",
         notes:       `Based on ${cbm.toFixed(2)} CBM`,
       });
     }
@@ -197,7 +190,7 @@ function buildEstimates(req: ShippingRateRequest, lane: LaneRates): CarrierQuote
         priceUSD:    Math.round(midpoint(lane.sea_fcl_20ft)),
         transitDays: lane.sea_transit_days,
         validUntil:  validUntil(),
-        source:      "estimate",
+        source:      "eliezer",
       });
     }
 
@@ -208,7 +201,7 @@ function buildEstimates(req: ShippingRateRequest, lane: LaneRates): CarrierQuote
         priceUSD:    Math.round(midpoint(lane.air_per_kg) * req.weightKg),
         transitDays: lane.air_transit_days,
         validUntil:  validUntil(3),
-        source:      "estimate",
+        source:      "eliezer",
       });
     }
 
@@ -219,7 +212,7 @@ function buildEstimates(req: ShippingRateRequest, lane: LaneRates): CarrierQuote
         priceUSD:    Math.round(midpoint(lane.express_per_kg) * req.weightKg),
         transitDays: { min: 2, max: 5 },
         validUntil:  validUntil(1),
-        source:      "estimate",
+        source:      "eliezer",
       });
     }
   }
@@ -227,107 +220,17 @@ function buildEstimates(req: ShippingRateRequest, lane: LaneRates): CarrierQuote
   return quotes;
 }
 
-// ── DHL Express API (live, optional) ──────────────────────────────────────
-
-async function fetchDHLRates(req: ShippingRateRequest): Promise<CarrierQuote[]> {
-  const apiKey    = process.env.DHL_API_KEY;
-  const apiSecret = process.env.DHL_API_SECRET;
-  if (!apiKey || !apiSecret) return [];
-
-  try {
-    const { data } = await axios.get(
-      "https://api-mock.dhl.com/mydhlapi/rates",
-      {
-        params: {
-          accountNumber:       "123456789",
-          originCountryCode:   "CN",
-          originCityName:      req.origin,
-          destinationCountryCode: "NG",
-          destinationCityName: req.destination,
-          weight:              req.weightKg,
-          length:              40, height: 30, width: 30,
-          plannedShippingDateAndTime: new Date().toISOString(),
-          isCustomsDeclarable: false,
-          unitOfMeasurement:   "metric",
-        },
-        headers: { "DHL-API-Key": apiKey },
-        timeout: 8_000,
-      }
-    );
-
-    return (data.products ?? []).map((p: Record<string, unknown>) => ({
-      carrier:     `DHL ${p.productName}`,
-      mode:        "express" as ShipmentMode,
-      priceUSD:    (p as { totalPrice?: Array<{ price: number }> }).totalPrice?.[0]?.price ?? 0,
-      transitDays: { min: 2, max: 5 },
-      validUntil:  validUntil(1),
-      source:      "live" as const,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// ── Freightos API (live, optional) ────────────────────────────────────────
-
-async function fetchFreightosRates(req: ShippingRateRequest): Promise<CarrierQuote[]> {
-  const apiKey = process.env.FREIGHTOS_API_KEY;
-  if (!apiKey) return [];
-
-  try {
-    const { data } = await axios.post(
-      "https://api.freightos.com/api/v1/quotations",
-      {
-        origin:      { portCode: req.origin },
-        destination: { portCode: req.destination },
-        cargo: [{
-          weight:   { value: req.weightKg, unit: "KG" },
-          volume:   { value: req.cbm ?? req.weightKg / 500, unit: "CBM" },
-          quantity: 1,
-        }],
-      },
-      {
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        timeout: 10_000,
-      }
-    );
-
-    return (data.quotations ?? []).map((q: Record<string, unknown>) => ({
-      carrier:     String(q.carrier ?? "Freightos carrier"),
-      mode:        "sea_lcl" as ShipmentMode,
-      priceUSD:    Number((q as { totalCharges?: { amount: number } }).totalCharges?.amount ?? 0),
-      transitDays: { min: 20, max: 45 },
-      validUntil:  validUntil(7),
-      source:      "live" as const,
-    }));
-  } catch {
-    return [];
-  }
-}
-
 // ── Public entry point ────────────────────────────────────────────────────
 
 export async function getShippingRates(req: ShippingRateRequest): Promise<ShippingRateResult> {
-  const lane = getLaneRates(req.origin, req.destination);
-
-  // Attempt live carrier APIs first, fall back to estimates
-  const [dhlQuotes, freightosQuotes] = await Promise.all([
-    fetchDHLRates(req),
-    fetchFreightosRates(req),
-  ]);
-
-  const liveQuotes   = [...dhlQuotes, ...freightosQuotes];
-  const estimateQuotes = buildEstimates(req, lane);
-
-  // Prefer live quotes; supplement with estimates for modes not covered
-  const coveredModes = new Set(liveQuotes.map((q) => q.mode));
-  const fallbacks    = estimateQuotes.filter((q) => !coveredModes.has(q.mode));
+  const lane   = getLaneRates(req.origin, req.destination);
+  const quotes = buildEstimates(req, lane);
 
   return {
     origin:      req.origin,
     destination: req.destination,
     weightKg:    req.weightKg,
     cbm:         req.cbm,
-    quotes:      [...liveQuotes, ...fallbacks],
+    quotes,
   };
 }

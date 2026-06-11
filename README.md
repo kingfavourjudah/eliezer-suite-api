@@ -1,6 +1,6 @@
 # eliezer-suite-api
 
-Agent API server for Eliezer Suite. Provides live shipping rates and sanctions screening data to the AI agent layer, protected by the [x402 payment protocol](https://x402.org). Built with Express and TypeScript, deployed on Railway.
+Agent API server for Eliezer Suite. Provides live shipping rates and sanctions screening data to the AI agent layer, protected by the [x402 payment protocol](https://x402.org). Built with Express and TypeScript, deployed on Northflank.
 
 ---
 

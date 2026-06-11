@@ -16,6 +16,7 @@ app.get("/health", (_req, res) => {
   res.json({
     status:  "ok",
     service: "eliezer-suite-api",
+    version: "1.0.1",
     chain:   process.env.CHAIN_ID ?? "421614",
     ts:      new Date().toISOString(),
   });
